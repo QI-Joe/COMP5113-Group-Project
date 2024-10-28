@@ -4,8 +4,9 @@ The group plans to select one of the below models to accomplish the given group 
 
 ### RoLAND
 RoLAND is a semi-RNN-like architecture. The paper does not propose a new model but a recurrent memory framework that can be applied to various models.
+!["Dynamic-GNN"](https://github.com/QI-Joe/COMP5113-Group-Project/blob/main/RoLand_Graph.png)
 <p align="centre>
-  <img src="https://github.com/QI-Joe/COMP5113-Group-Project/tree/main/RoLand_Graph.png"
+  <img src="https://github.com/QI-Joe/COMP5113-Group-Project/blob/main/RoLand_Graph.png"
   alt = "image">
 </p>
 
