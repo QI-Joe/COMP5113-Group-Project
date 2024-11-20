@@ -1,15 +1,18 @@
-from Roland import *
+from models.Roland import *
 import random
 from itertools import chain
 import copy
 import time
 from torch_geometric.transforms import RandomLinkSplit, RandomNodeSplit
 from typing import Tuple, List
-from torch.optim import optimizer
+from torch.optim import Optimizer
 from torch_geometric.data import Data
 from torch_geometric.loader import NeighborLoader
+import torch
+from Roland_utils.dataloader import load_standard
+from Roland_utils.utils import to_cuda
 
-def eval_Roland_SL(emb: torch.Tensor, data: Temporal_Dataloader, num_classes: int, models:nn.Linear, \
+def eval_Roland_SL(emb: torch.Tensor, data: Data, num_classes: int, models:nn.Linear, \
                    is_val: bool, is_test: bool, \
                    device: str="cuda:0", split_ratio: float=0.1):
     """
@@ -29,12 +32,11 @@ def eval_Roland_SL(emb: torch.Tensor, data: Temporal_Dataloader, num_classes: in
     raise ValueError(f"is_val, is_test should not be the same. is_val: {is_val}, is_test: {is_test}")
 
 
-def train_Roland(model: ROLANDGNN, projection_model: nn.Linear, train_data: Temporal_Dataloader, 
-                 test_data: Temporal_Dataloader, 
+def train_Roland(model: ROLANDGNN, projection_model: nn.Linear, train_data: Data, test_data: Data, 
                  num_classes: int, last_embeddings: list[torch.Tensor], optimizer, \
                  graphsage: bool = False, gcn_only: bool = False, \
                  num_current_edges=None, num_previous_edges=None,\
-                 device='cpu', num_epochs=200, verbose=False) -> Tuple[ROLANDGNN, optimizer, List[float], List[torch.Tensor], float]:
+                 device='cpu', num_epochs=200, verbose=False) -> Tuple[ROLANDGNN, Optimizer, List[float], List[torch.Tensor], float]:
     avgpr_tra_max = 0
     # model.to(device=device)
     projection_model.to(device)
@@ -55,7 +57,7 @@ def train_Roland(model: ROLANDGNN, projection_model: nn.Linear, train_data: Temp
         projection_model.train()
         optimizer.zero_grad()
 
-        neighborloader = NeighborLoader(data=train_data, batch_size=1024, num_neighbors=[-1], shuffle=False)
+        # neighborloader = NeighborLoader(data=train_data, batch_size=1024, num_neighbors=[-1], shuffle=False)
         pred, current_embeddings =\
             model(x=train_data.x, edge_index=train_data.edge_index, graphsage = graphsage, gcn_only = gcn_only, previous_embeddings=current_embeddings) 
         project_pred = f(projection_model(pred), dim=-1)
@@ -99,10 +101,8 @@ def main_Roland(configs, device='cpu'):
     graphsage = 2
     gcn_only = True
 
-    graph, idxloader = data_load(dataset_name)
+    graph = load_standard(dataset_name)
     num_classes = graph.y.max().item()+1
-    temporal_list = Temporal_Splitting(graph, snapshots=num_snap).temporal_splitting()
-    temporal_dataloader = Dynamic_Dataloader(temporal_list, graph)
     total_num_nodes = graph.x.shape[0]
 
     input_dim = graph.pos.size(1) if not graphsage or graphsage==2 else hidden_conv1
@@ -116,7 +116,7 @@ def main_Roland(configs, device='cpu'):
     for t in range(num_snap-2):
         print(f"At Snapshot {t+1}, we observe loss as below, \n--------------------------------------------------")
         temporal_start = time.time()
-        temporal_graph = temporal_dataloader.get_temporal()
+        temporal_graph = graph
         temporal_adj = adjacent_list_building(temporal_graph)
         x_counterpart = (copy.deepcopy(graph.pos), copy.deepcopy(graph.pos))
         temporal_graph.pos = x_counterpart[0]
@@ -128,15 +128,15 @@ def main_Roland(configs, device='cpu'):
         torch.manual_seed(2024)
         transform = RandomNodeSplit(num_val=0.1,num_test=0.8)
 
-        temporal_graph.establish_two_layer_idx_matching(idxloader)
-        transfered_graph: Temporal_Dataloader = transform(temporal_graph)
-        transfered_graph = transfered_graph.mask_adjustment_two_layer_idx()
+        # temporal_graph.establish_two_layer_idx_matching(idxloader)
+        transfered_graph: Data = transform(temporal_graph)
+        # transfered_graph = transfered_graph.mask_adjustment_two_layer_idx()
         transfered_graph = to_cuda(transfered_graph, device)
 
-        test_data = copy.deepcopy(temporal_dataloader.get_T1graph(t))
+        # test_data = copy.deepcopy(temporal_dataloader.get_T1graph(t))
         if dataset_name.lower() == "cora":
             test_data.test_mask = transfered_graph.test_mask
-        test_data.establish_two_layer_idx_matching(idxloader)
+        # test_data.establish_two_layer_idx_matching(idxloader)
         test_data.pos = x_counterpart[1]
         test_data = to_cuda(test_data, device=device)
 
@@ -162,7 +162,6 @@ def main_Roland(configs, device='cpu'):
         #SAVE AND DISPLAY EVALUATION
         m1 = stage_metrics
         print("Validation Final Trun: {}".format(round(m1[0], 4)))
-        temporal_dataloader.update_event(t)
         temporal_time = time.time() - temporal_start
         print(f'View {t+1}, \n \
                 Average Epoch Time {avg_epoch}, \n \
