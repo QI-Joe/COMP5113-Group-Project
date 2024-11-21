@@ -38,7 +38,7 @@ class Encoder(nn.Module):
         else:
             self.weight = nn.Parameter(
                 torch.FloatTensor(embed_dim, self.feat_dim if self.gcn else 2 * self.feat_dim), requires_grad=True)
-        init.xavier_uniform(self.weight)
+        init.xavier_uniform_(self.weight)
 
     def forward(self, nodes):
         """
@@ -134,7 +134,7 @@ class SupervisedGraphSage(nn.Module):
         self.xent = nn.CrossEntropyLoss()
 
         self.weight = nn.Parameter(torch.FloatTensor(num_classes, enc.embed_dim))
-        init.xavier_uniform(self.weight)
+        init.xavier_uniform_(self.weight)
 
     def forward(self, nodes):
         embeds = self.enc(nodes)
@@ -153,6 +153,7 @@ def adjacent_list_building(graph: Data):
     adj_lists = defaultdict(set)
     for idx, edge in enumerate(edges):
         src, dst = edge
+        src, dst = src.item(), dst.item()
         adj_lists[src].add(dst)
         adj_lists[dst].add(src)
     return adj_lists

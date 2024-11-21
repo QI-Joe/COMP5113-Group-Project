@@ -1,4 +1,6 @@
-from models.Roland import *
+from models.Roland import ROLANDGNN, RoLand_config, adjacent_list_building
+import torch.nn as nn
+import torch.nn.functional as F
 import random
 from itertools import chain
 import copy
@@ -11,6 +13,9 @@ from torch_geometric.loader import NeighborLoader
 import torch
 from Roland_utils.dataloader import load_standard
 from Roland_utils.utils import to_cuda
+from Roland_utils.evaluator import LogRegression, Simple_Regression
+import numpy as np
+
 
 def eval_Roland_SL(emb: torch.Tensor, data: Data, num_classes: int, models:nn.Linear, \
                    is_val: bool, is_test: bool, \
@@ -21,24 +26,24 @@ def eval_Roland_SL(emb: torch.Tensor, data: Data, num_classes: int, models:nn.Li
     """
     if is_val and not is_test:
         emb = emb[data.val_mask].detach()
-        truth = data.y[data.kept_val_mask].detach()
+        truth = data.y[data.val_mask].detach()
         return Simple_Regression(emb, truth, num_classes=num_classes, project_model=models, return_model=True, num_epochs=2000)
     elif is_test and not is_val:
-        ground_node_mask = data.layer2_n_id.index_Temporal.values
-        test_indices = ground_node_mask[data.test_mask]
+        # ground_node_mask = data.layer2_n_id.index_Temporal.values
+        test_indices = data.test_mask
         emb = emb[test_indices].detach()
         truth = data.y[test_indices].detach()
         return Simple_Regression(emb, truth, num_classes=num_classes, project_model=models, return_model=False, num_epochs=2000)
     raise ValueError(f"is_val, is_test should not be the same. is_val: {is_val}, is_test: {is_test}")
 
 
-def train_Roland(model: ROLANDGNN, projection_model: nn.Linear, train_data: Data, test_data: Data, 
+def train_Roland(model: ROLANDGNN, projection_model: nn.Linear, train_data: Data,
                  num_classes: int, last_embeddings: list[torch.Tensor], optimizer, \
                  graphsage: bool = False, gcn_only: bool = False, \
                  num_current_edges=None, num_previous_edges=None,\
                  device='cpu', num_epochs=200, verbose=False) -> Tuple[ROLANDGNN, Optimizer, List[float], List[torch.Tensor], float]:
     avgpr_tra_max = 0
-    # model.to(device=device)
+    model.to(device=device)
     projection_model.to(device)
     best_model: ROLANDGNN = model
     best_epoch=0
@@ -62,7 +67,7 @@ def train_Roland(model: ROLANDGNN, projection_model: nn.Linear, train_data: Data
             model(x=train_data.x, edge_index=train_data.edge_index, graphsage = graphsage, gcn_only = gcn_only, previous_embeddings=current_embeddings) 
         project_pred = f(projection_model(pred), dim=-1)
         # project_pred = pred
-        loss = model.loss(project_pred[train_data.train_mask], train_data.y[train_data.kept_train_mask]) 
+        loss = model.loss(project_pred[train_data.train_mask], train_data.y[train_data.train_mask]) 
         loss.backward() # retain_graph=True
         optimizer.step() 
 
@@ -76,13 +81,13 @@ def train_Roland(model: ROLANDGNN, projection_model: nn.Linear, train_data: Data
             model.eval()
             pred, _ = model(x=train_data.x, edge_index=train_data.edge_index, graphsage = graphsage, gcn_only = gcn_only, previous_embeddings=current_embeddings)
             val_metrics, val_regression = eval_Roland_SL(emb=pred, data=train_data, num_classes=num_classes, models=val_regression, is_val=True, is_test=False)
-            if avgpr_tra_max-tol <= val_metrics[0]:
-                avgpr_tra_max = val_metrics[0]
+            if avgpr_tra_max-tol <= val_metrics["accuracy"]:
+                avgpr_tra_max = val_metrics["accuracy"]
                 best_epoch = epoch
                 best_val = val_metrics
                 best_current_embeddings = current_embeddings
                 best_model = model
-            print("val acc is {:.4f}".format(val_metrics[0]))
+            print("val acc is {:.4f}".format(val_metrics["accuracy"]))
     
     if loss_keper!=100:
         print(f"final loss is {loss_keper:04f}, \n---------------------------------------------------- \n")
@@ -101,11 +106,11 @@ def main_Roland(configs, device='cpu'):
     graphsage = 2
     gcn_only = True
 
-    graph = load_standard(dataset_name)
+    graph = load_standard(dataset_name)[0]
     num_classes = graph.y.max().item()+1
     total_num_nodes = graph.x.shape[0]
 
-    input_dim = graph.pos.size(1) if not graphsage or graphsage==2 else hidden_conv1
+    input_dim = graph.x.size(1) if not graphsage or graphsage==2 else hidden_conv1
     model = ROLANDGNN(input_dim, total_num_nodes, update='mlp', device=device)
     # graphsage_adj = adjacent_list_building(graph)
     model.reset_parameters()
@@ -118,9 +123,9 @@ def main_Roland(configs, device='cpu'):
         temporal_start = time.time()
         temporal_graph = graph
         temporal_adj = adjacent_list_building(temporal_graph)
-        x_counterpart = (copy.deepcopy(graph.pos), copy.deepcopy(graph.pos))
-        temporal_graph.pos = x_counterpart[0]
-        num_nodes = temporal_graph.pos.shape[0]
+        # x_counterpart = (copy.deepcopy(graph.pos), copy.deepcopy(graph.pos))
+        # temporal_graph.pos = x_counterpart[0]
+        num_nodes = temporal_graph.x.shape[0]
         
         last_embeddings = [torch.zeros((num_nodes, hidden_conv1)).to(device), \
                            torch.zeros((num_nodes, hidden_conv2)).to(device)]
@@ -129,16 +134,16 @@ def main_Roland(configs, device='cpu'):
         transform = RandomNodeSplit(num_val=0.1,num_test=0.8)
 
         # temporal_graph.establish_two_layer_idx_matching(idxloader)
-        transfered_graph: Data = transform(temporal_graph)
         # transfered_graph = transfered_graph.mask_adjustment_two_layer_idx()
+        transfered_graph: Data = transform(temporal_graph)
         transfered_graph = to_cuda(transfered_graph, device)
 
         # test_data = copy.deepcopy(temporal_dataloader.get_T1graph(t))
-        if dataset_name.lower() == "cora":
-            test_data.test_mask = transfered_graph.test_mask
+        # if dataset_name.lower() == "cora":
+        #     test_data.test_mask = transfered_graph.test_mask
         # test_data.establish_two_layer_idx_matching(idxloader)
-        test_data.pos = x_counterpart[1]
-        test_data = to_cuda(test_data, device=device)
+        # test_data.pos = x_counterpart[1]
+        # test_data = to_cuda(test_data, device=device)
 
         #TRAIN AND TEST THE MODEL FOR THE CURRENT SNAP
         if graphsage:
@@ -151,23 +156,26 @@ def main_Roland(configs, device='cpu'):
             optimizer = torch.optim.Adam(chain(model.parameters(), projection_model.parameters()), lr = 1e-2, weight_decay=1e-4)
 
         model, optimizer, stage_metrics, last_embeddings, avg_epoch, final_classifier =\
-        train_Roland(model, projection_model, transfered_graph, test_data, num_classes, \
+        train_Roland(model, projection_model, transfered_graph, num_classes, \
                      graphsage=graphsage, gcn_only=gcn_only, \
                     last_embeddings = last_embeddings, optimizer=optimizer, device=device)
         
-        if num_snap<=3:
-            test_data.test_mask = transfered_graph.test_mask
+        test_data = transfered_graph
         t1_emb, _ = model(test_data.x, test_data.edge_index, graphsage=graphsage, gcn_only=gcn_only, previous_embeddings=last_embeddings)
         m2, _ = eval_Roland_SL(emb=t1_emb, data=test_data, num_classes=num_classes, models=final_classifier, is_val=False, is_test=True, device=device)
         #SAVE AND DISPLAY EVALUATION
         m1 = stage_metrics
-        print("Validation Final Trun: {}".format(round(m1[0], 4)))
+        print("Validation Final Trun: {}".format(round(m1["accuracy"], 4)))
         temporal_time = time.time() - temporal_start
         print(f'View {t+1}, \n \
                 Average Epoch Time {avg_epoch}, \n \
                 Temporal Time {temporal_time}, \n \
-                Val Acc {m1[0]:05f}, \n \
-                Test Acc {m2[0]:05f}, \n \
-                Avg Test precision {m2[1]:05f}, \n \
-                Avg Test recall {m2[2]:05f}, \n \
-                Avg Test f1 {m2[3]:05f}')
+                Val Acc {m1["accuracy"]:05f}, \n \
+                Test Acc {m2["accuracy"]:05f}, \n \
+                Avg Test precision {m2["precision"]:05f}, \n \
+                Avg Test recall {m2["recall"]:05f}, \n \
+                Avg Test f1 {m2["f1"]:05f}')
+        
+if __name__ == "__main__":
+    configs = RoLand_config()
+    main_Roland(configs, device='cpu')

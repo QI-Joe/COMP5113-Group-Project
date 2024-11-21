@@ -2,10 +2,13 @@ from torch_geometric.nn import GCNConv, Linear
 import torch
 import torch.nn.functional as F
 from torch.nn import BCEWithLogitsLoss, GRUCell, CrossEntropyLoss
-from GraphSage import MeanAggregator, Encoder, SupervisedGraphSage, adjacent_list_building, node_splitation
+import sys
+# sys.path.append("..")
+from models.GraphSage import MeanAggregator, Encoder, SupervisedGraphSage, adjacent_list_building, node_splitation
 import torch.nn as nn
 from torch.nn import init
 import argparse
+
 
 def RoLand_config(model_detail):
     parser  = argparse.ArgumentParser()
@@ -118,7 +121,10 @@ class ROLANDGNN(torch.nn.Module):
         """
         num_nodes, feat_dim = node_fea.shape[0], node_fea.shape[1]
         features = nn.Embedding(num_nodes, feat_dim) # (num_nodes, feature_dim)
-        features.weight = nn.Parameter(node_fea, requires_grad=False).cuda()
+        counter_weight =nn.Parameter(torch.empty([num_nodes, feat_dim], dtype=torch.float32, device="cuda"), requires_grad=False)
+        with torch.no_grad():
+            counter_weight.copy_(node_fea)
+        features.weight = counter_weight
 
         agg1 = MeanAggregator(features, to_cuda=True)
         enc1 = Encoder(features, feat_dim, output_dim, adj_lists, agg1, gcn=True, to_cuda=True)
@@ -250,3 +256,15 @@ class ROLANDGNN(torch.nn.Module):
     def loss(self, pred, link_label):
         return self.loss_fn(pred, link_label)
     
+def RoLand_config(model_detail=None):
+    parser  = argparse.ArgumentParser()
+    parser.add_argument("--snapshots", type=int, default=3)
+    parser.add_argument("--dataset_name", type=str, default="Cora")
+    parser.add_argument("--hidden_conv1", type=int, default=64)
+    parser.add_argument("--hidden_conv2", type=int, default=32)
+    training_config = dict()
+    parser=parser.parse_args(model_detail)
+    for arg in vars(parser):
+        training_config[arg] = getattr(parser, arg)
+    
+    return training_config
