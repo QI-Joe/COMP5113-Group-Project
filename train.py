@@ -15,7 +15,7 @@ from Roland_utils.dataloader import load_standard
 from Roland_utils.utils import to_cuda
 from Roland_utils.evaluator import LogRegression, Simple_Regression
 import numpy as np
-
+from Roland_utils.label_noise import label_process
 
 def eval_Roland_SL(emb: torch.Tensor, data: Data, num_classes: int, models:nn.Linear, \
                    is_val: bool, is_test: bool, \
@@ -103,6 +103,9 @@ def main_Roland(configs, device='cpu'):
     num_snap = configs["snapshots"]
     hidden_conv1 = configs["hidden_conv1"]
     hidden_conv2 = configs["hidden_conv2"]
+    noise_type = configs["noise_type"]
+    noise_rate = configs["noise_rate"]
+    seed = configs["seed"]
     graphsage = 2
     gcn_only = True
 
@@ -137,6 +140,9 @@ def main_Roland(configs, device='cpu'):
         # transfered_graph = transfered_graph.mask_adjustment_two_layer_idx()
         transfered_graph: Data = transform(temporal_graph)
         transfered_graph = to_cuda(transfered_graph, device)
+
+        transfered_graph.y, transfered_graph.train_mask = label_process(transfered_graph.y, num_classes, noise_type=noise_type,\
+                                                                        noise_rate=noise_rate, random_seed=seed)
 
         # test_data = copy.deepcopy(temporal_dataloader.get_T1graph(t))
         # if dataset_name.lower() == "cora":

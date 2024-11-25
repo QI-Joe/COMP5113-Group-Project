@@ -16,6 +16,10 @@ def RoLand_config(model_detail):
     parser.add_argument("--dataset_name", type=str, default="Cora")
     parser.add_argument("--hidden_conv1", type=int, default=64)
     parser.add_argument("--hidden_conv2", type=int, default=32)
+    parser.add_argument("--noise_type", type=str, default="uniform")
+    parser.add_argument("--noise_rate", type=float, default=0.3)
+    parser.add_argument("--seed", type=int, default=2042)
+
     training_config = dict()
     parser=parser.parse_args(model_detail)
     for arg in vars(parser):
@@ -160,7 +164,7 @@ class ROLANDGNN(torch.nn.Module):
         """
         current_embeddings = [torch.Tensor([]),torch.Tensor([])]
         
-        #Preprocess text
+        #Preprocess text989
         node_idx = [i for i in range(x.shape[0])]
         if graphsage and graphsage != 2:
             neighbor_emb = self.encoder(node_idx) # (embed_dim, num_nodes)
