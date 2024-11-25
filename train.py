@@ -12,10 +12,11 @@ from torch_geometric.data import Data
 from torch_geometric.loader import NeighborLoader
 import torch
 from Roland_utils.dataloader import load_standard
-from Roland_utils.utils import to_cuda
+from Roland_utils.utils import to_cuda, mask2index, index2mask
 from Roland_utils.evaluator import LogRegression, Simple_Regression
 import numpy as np
 from Roland_utils.label_noise import label_process
+import copy
 
 def eval_Roland_SL(emb: torch.Tensor, data: Data, num_classes: int, models:nn.Linear, \
                    is_val: bool, is_test: bool, \
@@ -64,7 +65,7 @@ def train_Roland(model: ROLANDGNN, projection_model: nn.Linear, train_data: Data
 
         # neighborloader = NeighborLoader(data=train_data, batch_size=1024, num_neighbors=[-1], shuffle=False)
         pred, current_embeddings =\
-            model(x=train_data.x, edge_index=train_data.edge_index, graphsage = graphsage, gcn_only = gcn_only, previous_embeddings=current_embeddings) 
+            model.forward(x=train_data.x, edge_index=train_data.edge_index, graphsage = graphsage, gcn_only = gcn_only, previous_embeddings=current_embeddings) 
         project_pred = f(projection_model(pred), dim=-1)
         # project_pred = pred
         loss = model.loss(project_pred[train_data.train_mask], train_data.y[train_data.train_mask]) 
@@ -79,8 +80,10 @@ def train_Roland(model: ROLANDGNN, projection_model: nn.Linear, train_data: Data
         epoch_time.append(time.time() - epoch_start)
         if (epoch+1) % 50 == 0: 
             model.eval()
-            pred, _ = model(x=train_data.x, edge_index=train_data.edge_index, graphsage = graphsage, gcn_only = gcn_only, previous_embeddings=current_embeddings)
-            val_metrics, val_regression = eval_Roland_SL(emb=pred, data=train_data, num_classes=num_classes, models=val_regression, is_val=True, is_test=False)
+            pred, _ = model.forward(x=train_data.x, edge_index=train_data.edge_index, graphsage = graphsage, \
+                                    gcn_only = gcn_only, previous_embeddings=current_embeddings)
+            val_metrics, val_regression = eval_Roland_SL(emb=pred, data=train_data, num_classes=num_classes, \
+                                                         models=val_regression, is_val=True, is_test=False)
             if avgpr_tra_max-tol <= val_metrics["accuracy"]:
                 avgpr_tra_max = val_metrics["accuracy"]
                 best_epoch = epoch
@@ -138,11 +141,12 @@ def main_Roland(configs, device='cpu'):
 
         # temporal_graph.establish_two_layer_idx_matching(idxloader)
         # transfered_graph = transfered_graph.mask_adjustment_two_layer_idx()
+        label = copy.deepcopy(temporal_graph.y)
+        label, modified_mask = label_process(label, num_classes, noise_type=noise_type,\
+                                        noise_rate=noise_rate, random_seed=seed)
+        temporal_graph.y = label
         transfered_graph: Data = transform(temporal_graph)
         transfered_graph = to_cuda(transfered_graph, device)
-
-        transfered_graph.y, transfered_graph.train_mask = label_process(transfered_graph.y, num_classes, noise_type=noise_type,\
-                                                                        noise_rate=noise_rate, random_seed=seed)
 
         # test_data = copy.deepcopy(temporal_dataloader.get_T1graph(t))
         # if dataset_name.lower() == "cora":
