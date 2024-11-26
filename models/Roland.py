@@ -10,7 +10,7 @@ from torch.nn import init
 import argparse
 
 
-def RoLand_config(model_detail):
+def RoLand_config(model_detail=None):
     parser  = argparse.ArgumentParser()
     parser.add_argument("--snapshots", type=int, default=3)
     parser.add_argument("--dataset_name", type=str, default="Cora")
@@ -260,15 +260,3 @@ class ROLANDGNN(torch.nn.Module):
     def loss(self, pred, link_label):
         return self.loss_fn(pred, link_label)
     
-def RoLand_config(model_detail=None):
-    parser  = argparse.ArgumentParser()
-    parser.add_argument("--snapshots", type=int, default=3)
-    parser.add_argument("--dataset_name", type=str, default="Cora")
-    parser.add_argument("--hidden_conv1", type=int, default=64)
-    parser.add_argument("--hidden_conv2", type=int, default=32)
-    training_config = dict()
-    parser=parser.parse_args(model_detail)
-    for arg in vars(parser):
-        training_config[arg] = getattr(parser, arg)
-    
-    return training_config

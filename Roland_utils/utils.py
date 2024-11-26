@@ -46,3 +46,17 @@ def setup_seed(seed):
     random.seed(seed)
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
+
+def mask2index(mask: torch.Tensor) -> torch.Tensor:
+    '''
+    Convert mask to index
+    '''
+    return torch.arange(mask.size(0))[mask]
+
+def index2mask(index: torch.Tensor, size: int) -> torch.Tensor:
+    '''
+    Convert index to mask
+    '''
+    mask = torch.zeros(size, dtype=torch.bool)
+    mask[index] = True
+    return mask
