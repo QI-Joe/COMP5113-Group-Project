@@ -3,6 +3,7 @@ from torch_geometric.data import Data
 from typing import Union
 import numpy as np
 import random
+import matplotlib.pyplot as plt
 
 def to_cuda(tensor: Union[Data|torch.Tensor], device: str) -> torch.Tensor:
     device = torch.device(device)
@@ -60,3 +61,15 @@ def index2mask(index: torch.Tensor, size: int) -> torch.Tensor:
     mask = torch.zeros(size, dtype=torch.bool)
     mask[index] = True
     return mask
+
+def plot_drawing(loss_data: list, epoch_num: int, ds_name): 
+    plt.figure(figsize=(10,5))
+    plt.plot(range(epoch_num), loss_data)
+    plt.title(f'{ds_name} Loss in epoch {epoch_num}')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.xticks(range(0, epoch_num, 10))
+    plt.grid()
+    # save plot
+    plt.savefig(f'./{ds_name}_loss.png')
+    return

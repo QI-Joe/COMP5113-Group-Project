@@ -13,7 +13,7 @@ import argparse
 def RoLand_config(model_detail=None):
     parser  = argparse.ArgumentParser()
     parser.add_argument("--snapshots", type=int, default=3)
-    parser.add_argument("--dataset_name", type=str, default="Cora")
+    parser.add_argument("--dataset_name", type=str, default="WikiCS")
     parser.add_argument("--hidden_conv1", type=int, default=64)
     parser.add_argument("--hidden_conv2", type=int, default=32)
     parser.add_argument("--noise_type", type=str, default="uniform")
@@ -28,7 +28,7 @@ def RoLand_config(model_detail=None):
     return training_config
 
 class ROLANDGNN(torch.nn.Module):
-    def __init__(self, input_dim, num_nodes, device, dropout=0.0, update='moving'):
+    def __init__(self, input_dim, num_nodes, device, mlp_hidd: tuple[int], conv_hidd: tuple[int], dropout=0.0, update='moving'):
         
         super(ROLANDGNN, self).__init__()
         #Architecture: 
@@ -39,19 +39,22 @@ class ROLANDGNN(torch.nn.Module):
         #You can change the layer dimensions but 
         #if you change the architecture you need to change the forward method too
         #TODO: make the architecture parameterizable
+
+        linear_hidd1, linear_hidd2 = mlp_hidd
+
+        self.preprocess1 = Linear(input_dim, linear_hidd1).to(device)
+        self.preprocess2 = Linear(linear_hidd1, linear_hidd2).to(device)
+        self.full_connect = Linear(input_dim, linear_hidd2).to(device)
+
+        conv_hidden1, conv_hidden2 = conv_hidd
+
+        self.conv1 = GCNConv(linear_hidd2, conv_hidden1).to(device)
+        self.conv2 = GCNConv(conv_hidden1, conv_hidden2).to(device)
         
-        hidden_conv_1 = 64 
-        hidden_conv_2 = 32
-        self.preprocess1 = Linear(input_dim, 256).to(device)
-        self.preprocess2 = Linear(256, 128).to(device)
-        self.conv1 = GCNConv(128, hidden_conv_1).to(device)
-        self.conv2 = GCNConv(hidden_conv_1, hidden_conv_2).to(device)
-        self.postprocess1 = Linear(hidden_conv_2, 2).to(device)
-        self.full_connect = Linear(input_dim, 128).to(device)
 
         self.encoder1, self.encoder2 = None, None
         self.encoder_ware = None
-        #Initialize the loss function to BCEWithLogitsLoss
+        # Initialize the loss function to BCEWithLogitsLoss
         # self.loss_fn = loss(reduction="mean")
         self.loss_fn = CrossEntropyLoss(reduction="mean")
 
@@ -62,15 +65,15 @@ class ROLANDGNN(torch.nn.Module):
         elif update=='learnable':
             self.tau = torch.nn.Parameter(torch.Tensor([0])).to(device)
         elif update=='gru':
-            self.gru1 = GRUCell(hidden_conv_1, hidden_conv_1).to(device)
-            self.gru2 = GRUCell(hidden_conv_2, hidden_conv_2).to(device)
+            self.gru1 = GRUCell(conv_hidden1, conv_hidden1).to(device)
+            self.gru2 = GRUCell(conv_hidden2, conv_hidden2).to(device)
         elif update=='mlp':
-            self.mlp1 = Linear(hidden_conv_1*2, hidden_conv_1).to(device)
-            self.mlp2 = Linear(hidden_conv_2*2, hidden_conv_2).to(device)
+            self.mlp1 = Linear(conv_hidden1*2, conv_hidden1).to(device)
+            self.mlp2 = Linear(conv_hidden2*2, conv_hidden2).to(device)
         else:
             assert(update>=0 and update <=1)
             self.tau = torch.Tensor([update])
-        self.previous_embeddings = [torch.zeros((num_nodes, hidden_conv_1)).cuda(), torch.zeros((num_nodes, hidden_conv_2)).cuda()]
+        self.previous_embeddings = [torch.zeros((num_nodes, conv_hidden1)).cuda(), torch.zeros((num_nodes, conv_hidden2)).cuda()]
         self.batch_embedding_cache: dict[int: torch.Tensor] = []
     
     def batch_emb_store(self, batch_idx, emb):
@@ -125,10 +128,7 @@ class ROLANDGNN(torch.nn.Module):
         """
         num_nodes, feat_dim = node_fea.shape[0], node_fea.shape[1]
         features = nn.Embedding(num_nodes, feat_dim) # (num_nodes, feature_dim)
-        counter_weight =nn.Parameter(torch.empty([num_nodes, feat_dim], dtype=torch.float32, device="cuda"), requires_grad=False)
-        with torch.no_grad():
-            counter_weight.copy_(node_fea)
-        features.weight = counter_weight
+        features.weight = nn.Parameter(node_fea, requires_grad=False).cuda()
 
         agg1 = MeanAggregator(features, to_cuda=True)
         enc1 = Encoder(features, feat_dim, output_dim, adj_lists, agg1, gcn=True, to_cuda=True)
@@ -149,9 +149,8 @@ class ROLANDGNN(torch.nn.Module):
         self.preprocess2.reset_parameters()
         self.conv1.reset_parameters()
         self.conv2.reset_parameters()
-        self.postprocess1.reset_parameters()
 
-    def forward(self, x, edge_index, graphsage: bool = False, gcn_only: bool=False, previous_embeddings=None, edge_label_index=None, num_current_edges=None, num_previous_edges=None):
+    def forward(self, x, edge_index, graphsage: bool = False, gcn_only: bool=False, previous_embeddings=None):
         
         #You do not need all the parameters to be different to None in test phase
         #You can just use the saved previous embeddings and tau
@@ -164,94 +163,80 @@ class ROLANDGNN(torch.nn.Module):
         """
         current_embeddings = [torch.Tensor([]),torch.Tensor([])]
         
-        #Preprocess text989
+        #Preprocess text
         node_idx = [i for i in range(x.shape[0])]
         if graphsage and graphsage != 2:
             neighbor_emb = self.encoder(node_idx) # (embed_dim, num_nodes)
-            # scores = self.sageweight.mm(neighbor_emb).t()
             x = neighbor_emb.t()
         # return scores, current_embeddings
-        
-        sum_dim1 = torch.sum(x, dim=1)
-        if abs(torch.mean(sum_dim1).item()) >= 4.0:
-            print("the position occur at GraphSage place, with value", sum_dim1[:5])
 
         # do some combination
         if not gcn_only:
             h = self.preprocess1(x)
             h = F.leaky_relu(h, inplace=True)
-            h = F.dropout(h, p=self.dropout,inplace=True)
+            h = F.dropout(h, p=self.dropout, inplace=True)
             h = self.preprocess2(h)
             h = F.leaky_relu(h, inplace=True)
             h = F.dropout(h, p=self.dropout, inplace=True)
         else:
             h = self.full_connect(x)
 
-
-        sum_dim1 = torch.sum(h, dim=1)
-        if abs(torch.mean(sum_dim1).item()) >= 4.0:
-            print("the position occur at MLP place, with value", sum_dim1[:5])
-
         #GRAPHCONV
         #GraphConv1
         h = self.conv1(h, edge_index)
         h = F.leaky_relu(h, inplace=True)
-        h = F.dropout(h, p=self.dropout,inplace=True) # 
-
-        # normalization of past embedding
+        h = F.dropout(h, p=self.dropout,inplace=True) 
         prev_emb_norm = torch.norm(self.previous_embeddings[0], p=2, dim=1, keepdim=True)
         if not torch.sum(prev_emb_norm).item():
             prev_emb_norm = torch.ones(prev_emb_norm.shape).cuda()
 
-        #Embedding Update after first layer, better h will also update here, not fucking simply detach and record
-        """
-        a aggregation operation on graphsage, should take action on... both side?
-        """
+        # first align the embedding in the same row length
+        row_tranucate = self.previous_embeddings[0].shape[0]
+        past_emb = torch.zeros((h.shape[0], h.shape[1])).cuda()
+        try:
+            past_emb[:row_tranucate] = self.previous_embeddings[0]
+        except Exception as e:
+            print("the error occur at past embedding", e)
+            print("the shape of past embedding", past_emb.shape)
+            print("the shape of previous embedding", self.previous_embeddings[0].shape)
+            sys.exit(0)
 
         if self.update=='gru':
-            h = self.gru1(h, self.previous_embeddings[0].clone() )  # / prev_emb_norm
+            h = self.gru1(h, past_emb) 
         elif self.update=='mlp':
-            hin = torch.cat((h,self.previous_embeddings[0].clone() / prev_emb_norm),dim=1) # /prev_emb_norm
-            self.encoder1 = self.GraphSage_feat_adjust(hin.detach(), self.encoder)
-            h = self.encoder1(node_idx).t()
+            h = torch.cat((h, past_emb), dim=1) # /prev_emb_norm
+            h = self.mlp1.forward(h)
         else:
             h = torch.Tensor(self.tau * self.previous_embeddings[0].clone() + (1-self.tau) * h.clone())
-        
+                
         h_norm = torch.norm(h, p=2, dim=1, keepdim=True)
         h = h/h_norm
 
-        sum_dim1 = torch.sum(h, dim=1)
-        if abs(torch.mean(sum_dim1).item()) >= 10.0:
-            print("the position occur at Conv1 place, with value", sum_dim1[:5])
-
-        current_embeddings[0] = h.detach()
+        current_embeddings[0] = h.clone().detach()
         #GraphConv2
         h = self.conv2(h, edge_index)
         h = F.leaky_relu(h, inplace=True)
-        h = F.dropout(h, p=self.dropout,inplace=True) # 
+        h = F.dropout(h, p=self.dropout, inplace=True) # 
         
         # normalization of past embedding
         conv2_prev_norm = torch.norm(self.previous_embeddings[1], p=2, dim=1, keepdim=True)
         if not torch.sum(conv2_prev_norm).item():
             conv2_prev_norm = torch.ones(conv2_prev_norm.shape).cuda()
 
+        past_emb2 = torch.zeros((h.shape[0], h.shape[1])).cuda()
+        past_emb2[:row_tranucate] = self.previous_embeddings[1]
+
         #Embedding Update after second layer
         if self.update=='gru':
-            h = self.gru2(h, self.previous_embeddings[1].clone() )  # / conv2_prev_norm
+            h = self.gru2(h, past_emb2)  
         elif self.update=='mlp':
-            hin = torch.cat((h,self.previous_embeddings[1].clone() / conv2_prev_norm),dim=1) # /conv2_prev_norm
-            # self.encoder2 = self.GraphSage_feat_adjust(hin.detach(), self.encoder2)
-            # h = self.encoder2(node_idx).t()
-            h = self.mlp2(hin)
+            h = torch.cat((h, past_emb2), dim=1) 
+            h = self.mlp2(h)
         else:
             h = torch.Tensor(self.tau * self.previous_embeddings[1].clone() + (1-self.tau) * h.clone())
-      
-        # h_norm = torch.norm(h, p=2, dim=1, keepdim=True)
-        # h = h/h_norm
 
-        sum_dim1 = torch.sum(h, dim=1)
-        if abs(torch.mean(sum_dim1).item()) >= 10.0:
-            print("the position occur at Conv2 place, with value", sum_dim1[:5])
+        h_norm = torch.norm(h, p=2, dim=1, keepdim=True)
+        h = h/h_norm
 
         current_embeddings[1] = h.detach()
 

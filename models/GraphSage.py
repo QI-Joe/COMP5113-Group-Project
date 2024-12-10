@@ -1,4 +1,3 @@
-from cgi import test
 import torch
 import torch.nn as nn
 from torch.nn import init
@@ -7,7 +6,6 @@ from torch.autograd import Variable
 import random
 from torch_geometric.data import Data
 from collections import defaultdict
-from torch_geometric.loader import NeighborLoader
 
 class Encoder(nn.Module):
     """
@@ -112,7 +110,7 @@ class MeanAggregator(nn.Module):
         mask[row_indices, column_indices] = 1
         if self.to_cuda:
             mask = mask.cuda()
-        num_neigh = mask.sum(1, keepdim=True)
+        num_neigh = mask.sum(1, keepdim=True) + 1e-6
         mask = mask.div(num_neigh)
         if self.to_cuda:
             embed_matrix = self.features(torch.LongTensor(unique_nodes_list).cuda())
