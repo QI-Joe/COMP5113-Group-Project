@@ -4,18 +4,19 @@ import torch.nn.functional as F
 import random
 from itertools import chain
 import time
-from torch_geometric.transforms import RandomNodeSplit
+from torch_geometric.transforms import RandomNodeSplit, RandomLinkSplit
 from typing import Tuple, List
 from torch.optim import Optimizer
 from torch_geometric.data import Data
 from torch_geometric.loader import NeighborLoader
 import torch
 from Roland_utils.my_dataloader import data_load, Temporal_Dataloader, Temporal_Splitting, Dynamic_Dataloader
-from Roland_utils.utils import to_cuda
+from Roland_utils.utils import to_cuda, to_tensor, generate_negative_samples
 from Roland_utils.evaluator import LogRegression, Simple_Regression
 import numpy as np
 from Roland_utils.label_noise import label_process
 import torch.optim as optim
+import re
 
 def eval_Roland_SL(emb: torch.Tensor, data: Data, num_classes: int, models:nn.Linear, \
                    is_val: bool, is_test: bool, \
@@ -69,7 +70,7 @@ def train_Roland(model: ROLANDGNN, projection_model: nn.Linear, train_data: Temp
         # neighborloader = NeighborLoader(data=train_data, batch_size=1024, num_neighbors=[-1], shuffle=False)
         pred, current_embeddings =\
             model.forward(x=train_data.x, edge_index=train_data.edge_index, graphsage = graphsage, gcn_only = gcn_only, previous_embeddings=current_embeddings) 
-        project_pred = f(projection_model(pred), dim=-1)
+        project_pred = projection_model(pred)
         loss = model.loss(project_pred[train_data.train_mask], train_data.y[train_data.train_mask]) 
         loss.backward() # retain_graph=True
         optimizer.step() 
@@ -114,18 +115,21 @@ def main_Roland(configs, device='cpu'):
     gcn_only = True
     non_split = True
 
-    graph, idxloader = data_load(dataset_name)
-    num_classes = graph.y.max().item()+1
-    temporal_list = Temporal_Splitting(graph).temporal_splitting(time_mode="view", \
-                    snapshot=snapshot, views=snapshot-2, strategy="sequential", non_split=non_split)
-    temporal_dataloader = Dynamic_Dataloader(temporal_list, graph)
-    total_num_nodes = graph.x.shape[0]
+    graph = data_load(dataset_name)
+    num_classes = 2 # graph.y.max().item()+1
+    input_dim = 64
+    temporal_dataloader = graph
 
-    input_dim = graph.pos.size(1) if not graphsage or graphsage==2 else hidden_conv1
+    if re.search(r'\bbit\b.*\balpha\b|\balpha\b.*\bbit\b', dataset_name, flags=re.IGNORECASE):
+        temporal_list = Temporal_Splitting(graph).temporal_splitting(time_mode="view", \
+                        snapshot=snapshot, views=snapshot-2, strategy="sequential", non_split=non_split)
+        temporal_dataloader = Dynamic_Dataloader(temporal_list, graph)
+        input_dim = graph.pos.size(1)
+    
     mlp_hidden = (512, 256)
     conv_hidden = (hidden_conv1, hidden_conv2)
 
-    model = ROLANDGNN(input_dim, total_num_nodes, mlp_hidd=mlp_hidden, conv_hidd=conv_hidden, update='mlp', device=device)
+    model = ROLANDGNN(input_dim, mlp_hidd=mlp_hidden, conv_hidd=conv_hidden, update='mlp', device=device)
 
     model.reset_parameters()
     projection_model = LogRegression(hidden_conv2, num_classes=num_classes)
@@ -136,16 +140,19 @@ def main_Roland(configs, device='cpu'):
         print(f"At Snapshot {t+1}, we observe loss as below, \n--------------------------------------------------")
         temporal_start = time.time()
         temporal_graph = temporal_dataloader.get_temporal()
-        num_nodes = temporal_graph.pos.shape[0]
+        num_links = temporal_graph.num_edges
         
-        last_embeddings = [torch.zeros((num_nodes, hidden_conv1)).to(device), \
-                           torch.zeros((num_nodes, hidden_conv2)).to(device)]
+        last_embeddings = [torch.zeros((num_links, hidden_conv1)).to(device), \
+                           torch.zeros((num_links, hidden_conv2)).to(device)]
         random.seed(2024)
         torch.manual_seed(2024)
-        transform = RandomNodeSplit(num_val=0.2,num_test=0.0)
+        transform = RandomLinkSplit(is_undirected=True, num_val=0.1,num_test=0.0)
+        temporal_graph = to_tensor(temporal_graph)
 
-        transfered_graph: Temporal_Dataloader = transform(temporal_graph)
-        transfered_graph = to_cuda(transfered_graph, device)
+        temp_data = Data(x=temporal_graph.x, edge_index=temporal_graph.edge_index)
+        trian_data, val_data, test_data = transform.forward(temp_data)
+        
+        negative_pair = generate_negative_samples(temporal_graph)
 
         t1_temporal = temporal_dataloader.get_T1graph(t)
 
@@ -163,6 +170,7 @@ def main_Roland(configs, device='cpu'):
         #SAVE AND DISPLAY EVALUATION
         m1 = stage_metrics
 
+        model.reset_parameters()
         print("Validation Final Trun: {}".format(round(m1["accuracy"], 4)))
         temporal_dataloader.update_event(t)
         temporal_time = time.time() - temporal_start

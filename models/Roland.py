@@ -13,7 +13,7 @@ import argparse
 def RoLand_config(model_detail=None):
     parser  = argparse.ArgumentParser()
     parser.add_argument("--snapshots", type=int, default=3)
-    parser.add_argument("--dataset_name", type=str, default="WikiCS")
+    parser.add_argument("--dataset_name", type=str, default="autos")
     parser.add_argument("--hidden_conv1", type=int, default=64)
     parser.add_argument("--hidden_conv2", type=int, default=32)
     parser.add_argument("--noise_type", type=str, default="uniform")
@@ -28,7 +28,7 @@ def RoLand_config(model_detail=None):
     return training_config
 
 class ROLANDGNN(torch.nn.Module):
-    def __init__(self, input_dim, num_nodes, device, mlp_hidd: tuple[int], conv_hidd: tuple[int], dropout=0.0, update='moving'):
+    def __init__(self, input_dim, device, mlp_hidd: tuple[int], conv_hidd: tuple[int], dropout=0.0, update='moving'):
         
         super(ROLANDGNN, self).__init__()
         #Architecture: 
@@ -73,7 +73,7 @@ class ROLANDGNN(torch.nn.Module):
         else:
             assert(update>=0 and update <=1)
             self.tau = torch.Tensor([update])
-        self.previous_embeddings = [torch.zeros((num_nodes, conv_hidden1)).cuda(), torch.zeros((num_nodes, conv_hidden2)).cuda()]
+        self.previous_embeddings = None # [torch.zeros((num_nodes, conv_hidden1)).cuda(), torch.zeros((num_nodes, conv_hidden2)).cuda()]
         self.batch_embedding_cache: dict[int: torch.Tensor] = []
     
     def batch_emb_store(self, batch_idx, emb):

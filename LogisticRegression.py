@@ -5,10 +5,10 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 from sklearn.model_selection import KFold
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import PolynomialFeatures
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
 from typing import Literal
 
-import Roland_utils.dataloader
+import Roland_utils.my_dataloader
 
 
 def train_logistic_regression_k_fold_multi_class(

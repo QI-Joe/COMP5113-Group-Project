@@ -1,5 +1,3 @@
-from turtle import pos
-from networkx import is_empty
 import pandas as pd
 import numpy as np
 import torch
@@ -7,7 +5,6 @@ import random
 import math
 from torch_geometric.data import Data
 import torch_geometric.utils as U
-import dgl
 import os
 from torch_geometric.loader import NeighborLoader
 from typing import Union
@@ -16,10 +13,12 @@ import os.path as osp
 from torch_geometric.datasets import Planetoid, CitationFull, WikiCS, Coauthor, Amazon
 import torch_geometric.transforms as T
 from datetime import datetime
+import glob
+import re
 
 MOOC, Mooc_extra = "Temporal_Dataset/act-mooc/act-mooc/", ["mooc_action_features", "mooc_action_labels", "mooc_actions"]
 MATHOVERFLOW, MathOverflow_extra = "Temporal_Dataset/mathoverflow/", ["sx-mathoverflow-a2q", "sx-mathoverflow-c2a", "sx-mathoverflow-c2q", "sx-mathoverflow"]
-
+DIM = 64
 
 class NodeIdxMatching(object):
 
@@ -42,12 +41,10 @@ class NodeIdxMatching(object):
         else:
             if len(nodes) == 0 or len(label) == 0:
                 raise ValueError("nodes and label are required")
-            elif len(label) != len(nodes):
-                raise ValueError("label and nodes should have the same length")
             if not isinstance(nodes, (np.ndarray, list, torch.Tensor)): 
                 nodes = list(nodes)
             self.nodes = self.to_numpy(nodes)
-            self.node: pd.DataFrame = pd.DataFrame({"node": nodes, "label": label}).reset_index()
+            self.node: pd.DataFrame = pd.DataFrame({"node": nodes}).reset_index()
 
     def to_numpy(self, nodes: Union[torch.Tensor, np.array]):
         if isinstance(nodes, torch.Tensor):
@@ -106,15 +103,12 @@ class Temporal_Dataloader(Data):
     an overrided class of Data, to store splitted temporal data and reset their index 
     which support for fast local idx and global idx mapping/fetching
     """
-    def __init__(self, nodes: Union[list, np.ndarray], edge_index: np.ndarray,\
-                  edge_attr: Union[list|np.ndarray], y: list,\
-                    pos: torch.Tensor) -> None:
+    def __init__(self, nodes: Union[list, np.ndarray], edge_index: np.ndarray, y: list, **kwargs) -> None:
         
-        super(Temporal_Dataloader, self).__init__(x = nodes, edge_index=edge_index, edge_attr=edge_attr, y=y, pos=pos)
+        super(Temporal_Dataloader, self).__init__(x = nodes, edge_index=edge_index, y=y, **kwargs)
         self.x = nodes
         self.edge_index = edge_index
         self.ori_edge_index = edge_index
-        self.edge_attr = edge_attr
         self.y = y
         self.kept_train_mask = None
         self.kept_val_mask = None
@@ -215,7 +209,7 @@ class Dynamic_Dataloader(object):
         super(Dynamic_Dataloader, self).__init__()
         self.data = data
         self.graph = graph
-        self.num_classes = int(self.graph.y.max().item() + 1)
+        # self.num_classes = int(self.graph.y.max().item() + 1)
         self.len = len(data)
 
         self.num_nodes = self.graph.x.shape[0]
@@ -256,17 +250,41 @@ def position_encoding(max_len, emb_size)->torch.Tensor:
     pe[:, 1::2] = torch.cos(position * div_term)
     return pe
 
-def load_dblp_interact(path: str = None, dataset: str = "dblp", *wargs) -> pd.DataFrame:
-    edges = pd.read_csv(os.path.join("/mnt/d/CodingArea/Python/CLDG/Data/CLDG-datasets/", dataset, '{}.txt'.format(dataset)), sep=' ', names=['src', 'dst', 'time'])
-    label = pd.read_csv(os.path.join('/mnt/d/CodingArea/Python/CLDG/Data/CLDG-datasets/', dataset, 'node2label.txt'), sep=' ', names=['node', 'label'])
+def load_autonomous_sys():
+    path:str = r"dataset/Autonomous systems AS-733/as20000102/as20000102.txt"
+    temporal_path: str = r"dataset/Autonomous systems AS-733/as-733"
 
-    return edges, label
+    temporal_files = glob.glob(os.path.join(temporal_path, "*.txt"))
+    temporals = [os.path.basename(f) for f in temporal_files]
 
-def load_mathoverflow_interact(path: str = MATHOVERFLOW, *wargs) -> pd.DataFrame:
-    edges = pd.read_csv(os.path.join(path, "sx-mathoverflow"+".txt"), sep=' ', names=['src', 'dst', 'time'])
-    label = pd.read_csv(os.path.join(path, "node2label"+".txt"), sep=' ', names=['node', 'label'])
+    temporal_dict: dict[str, list[list[int]]] = dict()
 
-    return edges, label
+    for names in temporals:
+        src, dst = list(), list()
+        with open(os.path.join(temporal_path, names), 'r') as file:
+            time, edge_num, node_num = None, None, None
+            for desc in range(4):
+                descriptive = next(file)
+                if desc == 1:
+                    time = ":".join(descriptive.split("-")[1].strip().split(" ")[::-1])
+                # elif desc==2:
+                #     match = re.search(r'# Nodes:(\d+)\s+Edges:\s+(\d+)', descriptive)
+                #     edge_num, node_num = int(match.group(1)), int(match.group(2))
+            
+            for line in file:
+                sub_src, sub_dst = map(int, line.split())
+                src.append(sub_src)
+                dst.append(sub_dst)
+    
+        temporal_dict[time] = [src, dst]
+    return temporal_dict
+
+
+def load_bitcoin_alpha():
+    path: str = r"dataset/Bitcoin Alpha trust weighted signed network/soc-sign-bitcoinalpha.csv/soc-sign-bitcoinalpha.csv"
+    df = pd.read_csv(path, sep=" ", header=None)
+    df.columns = ["src", "dst", "edge_weight", "timestamp"]
+    return df
 
 def get_dataset(path, name: str):
     assert name.lower() in [val.lower() for val in ['Cora', 'CiteSeer', 'PubMed', 'DBLP', 'Karate', 'WikiCS', 'Coauthor-CS', 'Coauthor-Phy',
@@ -289,9 +307,6 @@ def get_dataset(path, name: str):
     if name == 'Amazon-Photo'.lower():
         return Amazon(root=path, name='photo', transform=T.NormalizeFeatures())
 
-    # if name.startswith('ogbn'):
-    #     return PygNodePropPredDataset(root=osp.join(root_path, 'OGB'), name=name, transform=T.NormalizeFeatures())
-
     return (CitationFull if name == 'dblp' else Planetoid)(osp.join(root_path, 'Citation'), name, transform=T.NormalizeFeatures())
 
 def load_standard(dataset: str, *wargs) -> tuple[Data, NodeIdxMatching]:
@@ -301,33 +316,43 @@ def load_standard(dataset: str, *wargs) -> tuple[Data, NodeIdxMatching]:
     dataset = get_dataset(path, dataset)
     return dataset
 
-def load_mathoverflow(path: str = None, dataset: str = "mathoverflow", fea_dim: int = 64, *wargs) -> tuple[Data, NodeIdxMatching]:
+def edge_node_convertion(edges: Union[pd.DataFrame|list])->tuple[list[int]]:
+    if isinstance(edges, pd.DataFrame):
+        src, dst = edges.src.values, edges.dst.values
+    else:
+        src, dst= edges
+    node_counting = list(set(src+dst))
+
+    return node_counting, [src, dst]
+
+def auto_temporals() -> Dynamic_Dataloader:
     """
     Now this txt file only limited to loading data in from mathoverflow datasets
     path: (path, last three words of dataset) -> (str, str) e.g. ('data/mathoverflow/sx-mathoverflow-a2q.txt', 'a2q')
     node Idx of mathoverflow is not consistent!
     """
-    if dataset == "mathoverflow":
-        edges, label = load_mathoverflow_interact() if not path else load_mathoverflow_interact(path)
-    elif dataset == "dblp":
-        edges, label = load_dblp_interact() if not path else load_dblp_interact(path)
-    # idxlist = NodeIdxMatching(True, label)
-    # nodes, labels = idxlist.node2idx(label.node), torch.tensor(label.label)
-    # edges[["src", "dst"]] = idxlist.edge_replacement(edges[["src", "dst"]])
+    auto_dict = load_autonomous_sys()
 
-    x = label.node.to_numpy()
-    nodes = position_encoding(x.max()+1, fea_dim)[x]
-    labels = torch.tensor(label.label.to_numpy())
+    auto_list = []
+    for _, auto_value in auto_dict.items():
+        nodes, edges = edge_node_convertion(auto_value)
+        edges = np.array(edges)
+        time = np.arange(edges.shape[1])
+        pos = position_encoding(len(nodes), DIM)
+        edge_y = np.array([1 for _ in range(edges.shape[1])])
+        graph = Temporal_Dataloader(nodes=np.array(nodes), edge_index=edges, y=edge_y, time=time, pos=pos).get_Temporalgraph()
+        
+        auto_list.append(graph)
+    return Dynamic_Dataloader(data = auto_list, graph=auto_list[0])
 
-    edge_index = torch.tensor(edges.loc[:, ["src", "dst"]].values.T)
-    start_time = edges.time.min()
-    edges.time = edges.time.apply(lambda x: x - start_time)
-    time = torch.tensor(edges.time)
-
-    graph = Data(x=x, edge_index=edge_index, edge_attr=time, y=labels, pos = nodes)
-    # neighborloader = NeighborLoader(graph, num_neighbors=[10, 10], batch_size =2048, shuffle = False)
-    idxloader = NodeIdxMatching(False, nodes=x, label=labels)
-    return graph, idxloader
+def bitcoin_graph() -> Data:
+    bit_edges = load_bitcoin_alpha()
+    bit_node, edges = edge_node_convertion(edges=bit_edges.iloc[:, 2:])
+    timestamp = bit_edges.loc[:, "timestamp"]
+    edge_weight = bit_edges.loc[:, "edge_weight"]
+    pos = position_encoding(len(bit_node), DIM)
+    graph = Data(x=bit_node, edge_index=edges, time=timestamp, edge_attr=edge_weight, pos=pos)
+    return graph # , NodeIdxMatching(False, nodes = bit_node)
 
 def load_tsv(path: list[tuple[str]], *wargs) -> tuple[pd.DataFrame]:
     """
@@ -343,16 +368,20 @@ def load_tsv(path: list[tuple[str]], *wargs) -> tuple[pd.DataFrame]:
 def load_example():
     return "node_feat", "node_label", "edge_index", "train_indices", "val_indices", "test_indices"
 
-def data_load(dataset: str, for_test:bool=False, **wargs) -> tuple[Data, NodeIdxMatching]:
+def data_load(dataset: str, for_test: bool = False, **wargs) -> Union[Data|Dynamic_Dataloader]:
     dataset = dataset.lower()
-    if dataset == "mathoverflow" or dataset == "dblp":
-        return load_mathoverflow(dataset=dataset, **wargs)
-    elif dataset in ["cora", "citeseer", "wikics"] :
+    if dataset in ["cora", "citeseer", "wikics"] :
         graph = load_standard(dataset, **wargs)[0]
         if for_test:
             return graph, None
         nodes = [i for i in range(graph.x.shape[0])]
-        return graph, NodeIdxMatching(False, nodes=nodes, label=graph.y.numpy())
+        return graph , NodeIdxMatching(False, nodes=nodes, label=graph.y.numpy())
+
+    elif re.search(r'.*auto.*', dataset, flags=re.IGNORECASE):
+        return auto_temporals()
+    
+    elif re.search(r'\bbit\b.*\balpha\b|\balpha\b.*\bbit\b', dataset, flags=re.IGNORECASE):
+        return bitcoin_graph()
     else: 
         raise ValueError("Dataset not found")
 
@@ -440,7 +469,7 @@ class Temporal_Splitting(object):
         Temporal and Any Dynamic data loader will no longer compatable with static graph
         """
         edge_index = self.graph.edge_index
-        edge_attr = self.graph.edge_attr
+        edge_attr = self.graph.time
         pos = self.graph.pos
 
         max_time = max(edge_attr)
@@ -471,7 +500,7 @@ class Temporal_Splitting(object):
 
             sampled_edges = edge_index[:, sample_time]
             sampled_nodes = torch.unique(sampled_edges) # orignal/gobal node index
-            y = self.n_id.get_label_by_node(sampled_nodes)
+            # y = self.n_id.get_label_by_node(sampled_nodes)
             subpos = pos[self.n_id.sample_idx(sampled_nodes)]
 
             temporal_subgraph = Temporal_Dataloader(nodes=sampled_nodes, edge_index=sampled_edges, \
@@ -491,7 +520,7 @@ def to_cuda(graph: Union[Data, Temporal_Dataloader], device:str = "cuda:0"):
     if not isinstance(graph.y, torch.Tensor) or graph.y.device != device:
         graph.y = torch.tensor(graph.y).to(device)
     
-    pos_x_switch=True
+    pos_x_switch=False
     try:
         graph.pos = graph.pos.to(device)
     except Exception as e:

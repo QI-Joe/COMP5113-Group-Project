@@ -3,10 +3,31 @@ from torch_geometric.data import Data
 from typing import Union
 import numpy as np
 import random
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
+
+def generate_negative_samples(data: Data, num_neg_samples: int = 1000):
+    num_nodes = data.num_nodes
+    edges = set(map(tuple, data.edge_index.t().tolist()))  # Existing edges
+    negative_samples = []
+
+    while len(negative_samples) < num_neg_samples:
+        src = np.random.randint(0, num_nodes)
+        dst = np.random.randint(0, num_nodes)
+        if (src, dst) not in edges and (dst, src) not in edges and src != dst:
+            negative_samples.append((src, dst))
+
+    return torch.tensor(negative_samples, dtype=torch.long).t().contiguous()
+
+def to_tensor(tensor: Union[Data|torch.Tensor])-> torch.Tensor:
+    tensor.x = torch.tensor(tensor.x)
+    tensor.edge_index = torch.from_numpy(tensor.edge_index)
+    tensor.y = torch.from_numpy(tensor.y)
+    tensor.time = torch.from_numpy(tensor.time)
+    return tensor
 
 def to_cuda(tensor: Union[Data|torch.Tensor], device: str) -> torch.Tensor:
     device = torch.device(device)
+
     if tensor.x.device != device:
         tensor.x = tensor.x.to(device)
     if tensor.edge_index.device != device:
@@ -14,7 +35,7 @@ def to_cuda(tensor: Union[Data|torch.Tensor], device: str) -> torch.Tensor:
     if tensor.y.device != device:
         tensor.y = tensor.y.to(device)
     
-    pos_x_switch = True
+    pos_x_switch = False
     try:
         tensor.pos = tensor.pos.to(device)
     except Exception as e:
@@ -62,14 +83,14 @@ def index2mask(index: torch.Tensor, size: int) -> torch.Tensor:
     mask[index] = True
     return mask
 
-def plot_drawing(loss_data: list, epoch_num: int, ds_name): 
-    plt.figure(figsize=(10,5))
-    plt.plot(range(epoch_num), loss_data)
-    plt.title(f'{ds_name} Loss in epoch {epoch_num}')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.xticks(range(0, epoch_num, 10))
-    plt.grid()
-    # save plot
-    plt.savefig(f'./{ds_name}_loss.png')
-    return
+# def plot_drawing(loss_data: list, epoch_num: int, ds_name): 
+#     plt.figure(figsize=(10,5))
+#     plt.plot(range(epoch_num), loss_data)
+#     plt.title(f'{ds_name} Loss in epoch {epoch_num}')
+#     plt.xlabel('Epoch')
+#     plt.ylabel('Loss')
+#     plt.xticks(range(0, epoch_num, 10))
+#     plt.grid()
+#     # save plot
+#     plt.savefig(f'./{ds_name}_loss.png')
+#     return

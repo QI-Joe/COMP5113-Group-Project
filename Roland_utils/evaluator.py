@@ -4,6 +4,7 @@ from torch.optim import Adam
 import numpy as np
 from typing import Union
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+import torch.nn.functional as F
 
 class LogRegression(torch.nn.Module):
     def __init__(self, in_channels, num_classes):
@@ -21,7 +22,20 @@ class LogRegression(torch.nn.Module):
     def forward(self, x):
         ret = self.lin(x)
         return ret
-    
+
+class LinkPredictor(torch.nn.Module):
+    def __init__(self, in_channels):
+        super().__init__()
+        self.lin_src = nn.Linear(in_channels, in_channels)
+        self.lin_dst = nn.Linear(in_channels, in_channels)
+        nn.init.xavier_normal_(self.lin_src)
+        nn.init.xavier_normal_(self.lin_dst)
+        self.lin_final = nn.Linear(in_channels, 1)
+
+    def forward(self, z_src, z_dst):
+        h = F.cosine_similarity(self.lin_src(z_src), self.lin_dst(z_dst))
+        return self.lin_final(h)
+
 def Simple_Regression(embedding: torch.Tensor, label: Union[torch.Tensor | np.ndarray], num_classes: int, \
                       num_epochs: int = 1500,  project_model=None, return_model: bool = False) -> tuple[float, float, float, float]:
     device = embedding.device
