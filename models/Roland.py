@@ -191,15 +191,13 @@ class ROLANDGNN(torch.nn.Module):
             prev_emb_norm = torch.ones(prev_emb_norm.shape).cuda()
 
         # first align the embedding in the same row length
-        row_tranucate = self.previous_embeddings[0].shape[0]
         past_emb = torch.zeros((h.shape[0], h.shape[1])).cuda()
-        try:
+        if self.previous_embeddings[0].shape[0] < h.shape[0]:
+            row_tranucate = self.previous_embeddings[0].shape[0]
             past_emb[:row_tranucate] = self.previous_embeddings[0]
-        except Exception as e:
-            print("the error occur at past embedding", e)
-            print("the shape of past embedding", past_emb.shape)
-            print("the shape of previous embedding", self.previous_embeddings[0].shape)
-            sys.exit(0)
+        else:
+            row_tranucate = h.shape[0]
+            past_emb = self.previous_embeddings[0][:row_tranucate]
 
         if self.update=='gru':
             h = self.gru1(h, past_emb) 
@@ -223,8 +221,14 @@ class ROLANDGNN(torch.nn.Module):
         if not torch.sum(conv2_prev_norm).item():
             conv2_prev_norm = torch.ones(conv2_prev_norm.shape).cuda()
 
+        # align the row length for second level
         past_emb2 = torch.zeros((h.shape[0], h.shape[1])).cuda()
-        past_emb2[:row_tranucate] = self.previous_embeddings[1]
+        if self.previous_embeddings[1].shape[0] < h.shape[0]:
+            row_tranucate = self.previous_embeddings[1].shape[0]
+            past_emb2[:row_tranucate] = self.previous_embeddings[1]
+        else:
+            row_tranucate = h.shape[0]
+            past_emb2 = self.previous_embeddings[1][:row_tranucate]
 
         #Embedding Update after second layer
         if self.update=='gru':
@@ -242,6 +246,6 @@ class ROLANDGNN(torch.nn.Module):
 
         return h, current_embeddings
     
-    def loss(self, pred, link_label):
-        return self.loss_fn(pred, link_label)
+    def loss(self, pred, link_label: torch.Tensor):
+        return self.loss_fn(pred, link_label.unsqueeze(1))
     

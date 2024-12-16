@@ -18,11 +18,15 @@ def generate_negative_samples(data: Data, num_neg_samples: int = 1000):
 
     return torch.tensor(negative_samples, dtype=torch.long).t().contiguous()
 
-def to_tensor(tensor: Union[Data|torch.Tensor])-> torch.Tensor:
-    tensor.x = torch.tensor(tensor.x)
-    tensor.edge_index = torch.from_numpy(tensor.edge_index)
-    tensor.y = torch.from_numpy(tensor.y)
-    tensor.time = torch.from_numpy(tensor.time)
+def to_tensor(tensor: Union[Data, torch.Tensor]) -> torch.Tensor:
+    if not isinstance(tensor.x, torch.Tensor):
+        tensor.x = torch.tensor(tensor.x)
+    if not isinstance(tensor.edge_index, torch.Tensor):
+        tensor.edge_index = torch.from_numpy(tensor.edge_index)
+    if not isinstance(tensor.y, torch.Tensor):
+        tensor.y = torch.from_numpy(tensor.y)
+    if hasattr(tensor, 'time') and not isinstance(tensor.time, torch.Tensor):
+        tensor.time = torch.from_numpy(tensor.time)
     return tensor
 
 def to_cuda(tensor: Union[Data|torch.Tensor], device: str) -> torch.Tensor:
@@ -57,7 +61,7 @@ def neg_pos_mix_perm(neg: torch.Tensor, pos: torch.Tensor) -> tuple[torch.Tensor
 
     perm = torch.randperm(mixed.shape[1])
     mixed = mixed[:, perm]
-    mixed_label = mixed_label[:, perm]
+    mixed_label = mixed_label[perm]
 
     return mixed, mixed_label
 

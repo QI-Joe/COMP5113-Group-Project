@@ -28,13 +28,15 @@ class LinkPredictor(torch.nn.Module):
         super().__init__()
         self.lin_src = nn.Linear(in_channels, in_channels)
         self.lin_dst = nn.Linear(in_channels, in_channels)
-        nn.init.xavier_normal_(self.lin_src)
-        nn.init.xavier_normal_(self.lin_dst)
+        nn.init.xavier_normal_(self.lin_src.weight.data)
+        nn.init.xavier_normal_(self.lin_dst.weight.data)
         self.lin_final = nn.Linear(in_channels, 1)
 
     def forward(self, z_src, z_dst):
-        h = F.cosine_similarity(self.lin_src(z_src), self.lin_dst(z_dst))
-        return self.lin_final(h)
+        h = self.lin_src(z_src)+self.lin_dst(z_dst)
+        h = h.relu()
+        # h = F.cosine_similarity(self.lin_src(z_src), self.lin_dst(z_dst))
+        return torch.sigmoid(self.lin_final(h))
 
 def link_evaluator(embedding: torch.Tensor, data_pairs: tuple[torch.Tensor], num_classes: int=2, num_epochs: int = 1500):
     device = embedding.device
@@ -54,7 +56,7 @@ def link_evaluator(embedding: torch.Tensor, data_pairs: tuple[torch.Tensor], num
         z_dst = embedding[eval_data[1, :]]
 
         output = evaluator_model.forward(z_src=z_src, z_dst=z_dst)
-        loss = loss_fn(output, eval_pair_label)
+        loss = loss_fn(output.view(-1), eval_pair_label.to(device))
 
         loss.backward(retain_graph=False)
         optimizer.step()
@@ -63,16 +65,55 @@ def link_evaluator(embedding: torch.Tensor, data_pairs: tuple[torch.Tensor], num
             print(f'LogRegression | Epoch {epoch}: loss {loss.item():.4f}')
     
     with torch.no_grad():
-        projection = evaluator_model.forward(z_src=z_src, z_dst=z_dst)
+        eval_emb = evaluator_model.forward(z_src=z_src, z_dst=z_dst).view(-1)
+        projection = (eval_emb>0.5).int()
         y_true, y_hat = eval_pair_label.cpu().numpy(), projection.cpu().numpy()
         accuracy, precision, recall, f1 = accuracy_score(y_true, y_hat), \
                                         precision_score(y_true, y_hat, average='macro', zero_division=0), \
                                         recall_score(y_true, y_hat, average='macro'),\
                                         f1_score(y_true, y_hat, average='macro')
-    
     return {"accuracy": accuracy, "precision": precision, "recall": recall, "f1": f1}
 
+def mean_reciprocal_rank(src: torch.Tensor, dst: torch.Tensor, truth: np.ndarray):
+    """
+    Calculate Mean Reciprocal Rank (MRR) for link prediction.
 
+    Args:
+        predictions (torch.Tensor): Predicted scores for all possible edges.
+        positive_edge_index (torch.Tensor): Positive edges (shape: [2, P]) where P is the number of positive edges.
+
+    Returns:
+        float: Mean Reciprocal Rank score.
+    """
+    ranks = []
+    dst= dst.numpy()
+    
+    length = src.size(0)
+    for i in range(length):
+        # Create a list of edges with their scores
+        target = src[i].numpy() # 1x7
+        target_norm = np.linalg.norm(target)
+        target_normalized = target/target_norm
+
+        matrix_norm = np.linalg.norm(dst) # nx7
+        dst_normalized = dst/matrix_norm
+
+        cos_sim = np.dot(dst_normalized, target_normalized.T) # nx1
+        cos_index = np.argsort(cos_sim)
+        cos_sim = cos_sim[cos_index]
+
+        truth = truth[cos_index]
+
+        src_true_dst = truth[i]
+
+        # Find the position of src_true_dst in sorted_score
+        position = np.where(truth == src_true_dst)[0][0]
+        ranks.append(position + 1)  # Rank is 1-based
+        # array[array[:, 0].argsort()]
+
+    # Calculate MRR
+    mrr = sum(1.0 / rank for rank in ranks) / len(ranks)
+    return mrr
 
 def Simple_Regression(embedding: torch.Tensor, label: Union[torch.Tensor | np.ndarray], num_classes: int, \
                       num_epochs: int = 1500,  project_model=None, return_model: bool = False) -> tuple[float, float, float, float]:
