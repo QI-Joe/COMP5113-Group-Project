@@ -56,7 +56,7 @@ class ROLANDGNN(torch.nn.Module):
         self.encoder_ware = None
         # Initialize the loss function to BCEWithLogitsLoss
         # self.loss_fn = loss(reduction="mean")
-        self.loss_fn = CrossEntropyLoss(reduction="mean")
+        self.loss_fn = nn.BCEWithLogitsLoss()
 
         self.dropout = dropout
         self.update = update

@@ -48,6 +48,19 @@ def to_cuda(tensor: Union[Data|torch.Tensor], device: str) -> torch.Tensor:
 
     return tensor
 
+def neg_pos_mix_perm(neg: torch.Tensor, pos: torch.Tensor) -> tuple[torch.Tensor]:
+    pos_label = torch.ones(pos.shape[1])
+    neg_label = torch.zeros(neg.shape[1])
+    
+    mixed = torch.cat((neg, pos), dim=1)
+    mixed_label = torch.cat((neg_label, pos_label))
+
+    perm = torch.randperm(mixed.shape[1])
+    mixed = mixed[:, perm]
+    mixed_label = mixed_label[:, perm]
+
+    return mixed, mixed_label
+
 def setup_seed(seed):
     '''
     Setup random seed so that the experimental results are reproducible

@@ -11,30 +11,26 @@ from torch_geometric.data import Data
 from torch_geometric.loader import NeighborLoader
 import torch
 from Roland_utils.my_dataloader import data_load, Temporal_Dataloader, Temporal_Splitting, Dynamic_Dataloader
-from Roland_utils.utils import to_cuda, to_tensor, generate_negative_samples
-from Roland_utils.evaluator import LogRegression, Simple_Regression
+from Roland_utils.utils import to_cuda, to_tensor, generate_negative_samples, neg_pos_mix_perm
+from Roland_utils.evaluator import LogRegression, Simple_Regression, LinkPredictor, link_evaluator
 import numpy as np
 from Roland_utils.label_noise import label_process
 import torch.optim as optim
 import re
 
-def eval_Roland_SL(emb: torch.Tensor, data: Data, num_classes: int, models:nn.Linear, \
-                   is_val: bool, is_test: bool, \
-                   device: str="cuda:0", split_ratio: float=0.1):
+def eval_Roland_SL(emb: torch.Tensor, data_pair: tuple[Data|torch.Tensor], models:nn.Linear, \
+                   is_val: bool, is_test: bool, num_classes: int=2,\
+                   device: str="cuda:0"):
     """
     in SL trianing that the validation and text is sperated not doing it together, thus the same learning MLP should be used
     data: needed due to we need correct label
     """
-    if is_val and not is_test:
-        emb = emb[data.val_mask].detach()
-        truth = data.y[data.val_mask].detach()
-        return Simple_Regression(emb, truth, num_classes=num_classes, project_model=models, return_model=True, num_epochs=2000)
-    elif is_test and not is_val:
-        # ground_node_mask = data.layer2_n_id.index_Temporal.values
-        test_indices = data.test_mask
-        emb = emb[test_indices].detach()
-        truth = data.y[test_indices].detach()
-        return Simple_Regression(emb, truth, num_classes=num_classes, project_model=models, return_model=False, num_epochs=2000)
+    # if is_val and not is_test:
+    emb = emb.detach()
+    return link_evaluator(emb, data_pairs=data_pair)
+    # elif is_test and not is_val:
+    #     emb = emb.detach()
+    #     return link_evaluator(emb, data_pairs=data_pair)
     raise ValueError(f"is_val, is_test should not be the same. is_val: {is_val}, is_test: {is_test}")
 
 def eval_model_Dy(emb: torch.Tensor, data: Temporal_Dataloader, num_classes: int, device: str="cuda:0"):
@@ -42,11 +38,13 @@ def eval_model_Dy(emb: torch.Tensor, data: Temporal_Dataloader, num_classes: int
     truth = data.y.detach()
     return Simple_Regression(emb, truth, num_classes=num_classes, project_model=None, return_model=False)
 
-def train_Roland(model: ROLANDGNN, projection_model: nn.Linear, train_data: Temporal_Dataloader, 
+def train_Roland(model: ROLANDGNN, projection_model: LinkPredictor, train_data: tuple[Temporal_Dataloader, Data], 
                  num_classes: int, last_embeddings: list[torch.Tensor], optimizer, \
-                 graphsage: bool = False, gcn_only: bool = False, \
+                 val_pairs: tuple[Data, torch.Tensor], graphsage: bool = False, gcn_only: bool = False, \
                  device='cpu', num_epochs=200, verbose=False) -> Tuple[ROLANDGNN, optim.Optimizer, List[float], List[torch.Tensor], float]:
     avgpr_tra_max = 0
+    val_data, val_neg_pair = val_pairs
+    train_data, train_neg_pair = train_data
     # model.to(device=device)
     projection_model.to(device)
     best_model: ROLANDGNN = model
@@ -56,6 +54,12 @@ def train_Roland(model: ROLANDGNN, projection_model: nn.Linear, train_data: Temp
     f = F.log_softmax
     best_val, epoch_time = None, []
     
+    train_pair = train_data.edge_index[:, train_data.edge_label]
+    train, train_label = neg_pos_mix_perm(neg=train_neg_pair, pos=train_pair)
+
+    pos_pair = val_data.edge_index[:, val_data.edge_label]
+    val, val_label = neg_pos_mix_perm(neg=val_neg_pair, pos = pos_pair)
+
     tol = 5e-04
     loss_keper = 100
     MRR, Past_MRR, threshold, epoch = 1, 0, 1e-2, 0
@@ -70,8 +74,12 @@ def train_Roland(model: ROLANDGNN, projection_model: nn.Linear, train_data: Temp
         # neighborloader = NeighborLoader(data=train_data, batch_size=1024, num_neighbors=[-1], shuffle=False)
         pred, current_embeddings =\
             model.forward(x=train_data.x, edge_index=train_data.edge_index, graphsage = graphsage, gcn_only = gcn_only, previous_embeddings=current_embeddings) 
-        project_pred = projection_model(pred)
-        loss = model.loss(project_pred[train_data.train_mask], train_data.y[train_data.train_mask]) 
+        z_src = pred[train[0,:]]
+        z_dst = pred[train[1,:]]
+        
+        project_pred = projection_model.forward(z_src=z_src, z_dst=z_dst)
+
+        loss = model.loss(project_pred, train_label.to(device)) 
         loss.backward() # retain_graph=True
         optimizer.step() 
 
@@ -132,7 +140,7 @@ def main_Roland(configs, device='cpu'):
     model = ROLANDGNN(input_dim, mlp_hidd=mlp_hidden, conv_hidd=conv_hidden, update='mlp', device=device)
 
     model.reset_parameters()
-    projection_model = LogRegression(hidden_conv2, num_classes=num_classes)
+    projection_model = LinkPredictor(in_channels=hidden_conv2) # LogRegression(hidden_conv2, num_classes=num_classes)
 
     optimizer = torch.optim.Adam(chain(model.parameters(), projection_model.parameters()), lr = 1e-2, weight_decay=1e-4)
 
@@ -150,17 +158,19 @@ def main_Roland(configs, device='cpu'):
         temporal_graph = to_tensor(temporal_graph)
 
         temp_data = Data(x=temporal_graph.x, edge_index=temporal_graph.edge_index)
-        trian_data, val_data, test_data = transform.forward(temp_data)
-        
-        negative_pair = generate_negative_samples(temporal_graph)
+        train_data, val_data, test_data = transform.forward(temp_data)
 
-        t1_temporal = temporal_dataloader.get_T1graph(t)
+        train_negative_pair = generate_negative_samples(temporal_graph)
+        val_negative_pair = generate_negative_samples(temporal_graph)
 
         model, optimizer, stage_metrics, last_embeddings, avg_epoch, final_classifier =\
-        train_Roland(model, projection_model, transfered_graph, num_classes, \
+        train_Roland(model, projection_model, num_classes, \
+                     train_data=(train_data, train_negative_pair), val_data=(val_data, val_negative_pair), \
                      graphsage=graphsage, gcn_only=gcn_only, \
                     last_embeddings = last_embeddings, optimizer=optimizer, device=device)
         
+        t1_temporal = temporal_dataloader.get_T1graph(t)
+        negative_pair = generate_negative_samples(temporal_graph)
         test_data: Temporal_Dataloader = to_cuda(t1_temporal)
         with torch.no_grad():
             t1_emb, _ = model.forward(test_data.x, test_data.edge_index, graphsage=graphsage, \

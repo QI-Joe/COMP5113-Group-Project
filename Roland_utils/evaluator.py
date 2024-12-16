@@ -36,6 +36,44 @@ class LinkPredictor(torch.nn.Module):
         h = F.cosine_similarity(self.lin_src(z_src), self.lin_dst(z_dst))
         return self.lin_final(h)
 
+def link_evaluator(embedding: torch.Tensor, data_pairs: tuple[torch.Tensor], num_classes: int=2, num_epochs: int = 1500):
+    device = embedding.device
+
+    eval_data, eval_pair_label = data_pairs
+
+    evaluator_model = LinkPredictor(in_channels=embedding.shape[1]).to(device)
+    optimizer = Adam(evaluator_model.parameters(), lr=0.01, weight_decay=1e-4)
+
+    loss_fn = nn.BCEWithLogitsLoss()
+
+    for epoch in range(num_epochs):
+        evaluator_model.train()
+        optimizer.zero_grad()
+
+        z_src = embedding[eval_data[0, :]]
+        z_dst = embedding[eval_data[1, :]]
+
+        output = evaluator_model.forward(z_src=z_src, z_dst=z_dst)
+        loss = loss_fn(output, eval_pair_label)
+
+        loss.backward(retain_graph=False)
+        optimizer.step()
+
+        if (epoch+1) % 200 == 0:
+            print(f'LogRegression | Epoch {epoch}: loss {loss.item():.4f}')
+    
+    with torch.no_grad():
+        projection = evaluator_model.forward(z_src=z_src, z_dst=z_dst)
+        y_true, y_hat = eval_pair_label.cpu().numpy(), projection.cpu().numpy()
+        accuracy, precision, recall, f1 = accuracy_score(y_true, y_hat), \
+                                        precision_score(y_true, y_hat, average='macro', zero_division=0), \
+                                        recall_score(y_true, y_hat, average='macro'),\
+                                        f1_score(y_true, y_hat, average='macro')
+    
+    return {"accuracy": accuracy, "precision": precision, "recall": recall, "f1": f1}
+
+
+
 def Simple_Regression(embedding: torch.Tensor, label: Union[torch.Tensor | np.ndarray], num_classes: int, \
                       num_epochs: int = 1500,  project_model=None, return_model: bool = False) -> tuple[float, float, float, float]:
     device = embedding.device
